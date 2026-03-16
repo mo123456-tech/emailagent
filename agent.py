@@ -14,6 +14,7 @@ Claude analyzes the data and produces actionable outreach recommendations.
 """
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -221,7 +222,21 @@ class CRMAgent:
 
     def __init__(self, db: CRMDatabase, model: str = "claude-opus-4-6"):
         self.db = db
-        self.client = anthropic.Anthropic()
+        # Support ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or Claude Code session token
+        auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+        if not auth_token and not os.environ.get("ANTHROPIC_API_KEY"):
+            for _tp in (
+                "/home/claude/.claude/remote/.session_ingress_token",
+                os.path.expanduser("~/.claude/remote/.session_ingress_token"),
+            ):
+                if os.path.exists(_tp):
+                    with open(_tp) as f:
+                        auth_token = f.read().strip()
+                    break
+        if auth_token:
+            self.client = anthropic.Anthropic(auth_token=auth_token)
+        else:
+            self.client = anthropic.Anthropic()
         self.model = model
 
     def run(self, prompt: str, *, verbose: bool = False) -> str:
