@@ -65,8 +65,7 @@ def _save_report(title: str, html_body: str) -> dict:
 
 TOOLS = [
     # Server-side tools – the API executes these automatically
-    {"type": "web_search_20260209", "name": "web_search"},
-    {"type": "web_fetch_20260209", "name": "web_fetch"},
+    {"type": "web_search_20250305", "name": "web_search"},
     # Client-side tool – triggered when Claude has finished the report
     {
         "name": "save_report",
@@ -110,7 +109,7 @@ Research the most active property management blogs, forums, and communities RIGH
 Identify what property managers are struggling with, what they discuss most, and what \
 products would solve their biggest problems.
 
-## Sources to check (use web_search + web_fetch)
+## Sources to check (use web_search)
 Search and browse these communities – find the hottest, most-commented threads from the \
 past 30–90 days:
 
@@ -127,7 +126,7 @@ past 30–90 days:
 ## Research approach
 1. Search broadly first: "property manager problems 2025", "landlord pain points forum", \
 "property management software complaints", etc.
-2. Drill into the top threads to read actual comments and identify specific frustrations.
+2. Run multiple targeted searches to cover each source community and topic area.
 3. Look for patterns across multiple sources.
 4. Note: software complaints, legal/compliance challenges, tenant issues, maintenance \
 problems, financial management difficulties, staffing concerns.
@@ -194,7 +193,7 @@ def run() -> None:
 
         with client.messages.stream(
             model="claude-opus-4-6",
-            max_tokens=8192,
+            max_tokens=16000,
             thinking={"type": "adaptive"},
             system=SYSTEM_PROMPT,
             tools=TOOLS,
@@ -215,8 +214,6 @@ def run() -> None:
                 tool_input = getattr(block, "input", {}) or {}
                 if block.name == "web_search":
                     print(f"  Searching: {tool_input.get('query', '')}")
-                elif block.name == "web_fetch":
-                    print(f"  Fetching:  {tool_input.get('url', '')[:90]}")
 
         # Append the full assistant turn (required to preserve server tool results)
         messages.append({"role": "assistant", "content": response.content})
