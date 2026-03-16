@@ -3,3 +3,4 @@ __pycache__/
 *.pyo
 .env
 crm.db
+pm_report_*.html
