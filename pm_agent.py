@@ -3,22 +3,16 @@
 Property Manager Research Agent
 
 Autonomously searches top property management blogs and forums, identifies
-recurring themes and pain points, then emails a rich HTML report with
-product opportunity recommendations.
+recurring themes and pain points, then saves a polished HTML report you can
+open in any browser.
 
 Usage:
-    python pm_agent.py                # research + email the report
-    python pm_agent.py --dry-run      # save report to HTML file instead
-    python pm_agent.py --help
+    python pm_agent.py
 """
 
-import argparse
 import json
 import os
-import smtplib
 from datetime import datetime
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 import anthropic
 from dotenv import load_dotenv
@@ -44,55 +38,21 @@ def _make_client() -> anthropic.Anthropic:
     return anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env
 
 
-# ─── Email / file output ──────────────────────────────────────────────────────
+# ─── File output ──────────────────────────────────────────────────────────────
 
 
-def _send_email(subject: str, html_body: str, text_body: str) -> dict:
-    """Send the report via SMTP. Falls back gracefully if not configured."""
-    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
-    # Reuse IMAP creds if dedicated SMTP vars aren't set
-    smtp_user = os.environ.get("SMTP_USER") or os.environ.get("EMAIL_ADDRESS")
-    smtp_pass = os.environ.get("SMTP_PASS") or os.environ.get("EMAIL_PASSWORD")
-    report_to = os.environ.get("REPORT_TO") or smtp_user
-
-    if not smtp_user or not smtp_pass:
-        return {
-            "success": False,
-            "error": (
-                "SMTP credentials not configured. "
-                "Set EMAIL_ADDRESS + EMAIL_PASSWORD (or SMTP_USER + SMTP_PASS) in .env"
-            ),
-        }
-
-    try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"] = smtp_user
-        msg["To"] = report_to
-        msg.attach(MIMEText(text_body, "plain"))
-        msg.attach(MIMEText(html_body, "html"))
-
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(smtp_user, smtp_pass)
-            server.sendmail(smtp_user, report_to, msg.as_string())
-
-        return {"success": True, "sent_to": report_to}
-    except Exception as exc:
-        return {"success": False, "error": str(exc)}
-
-
-def _save_to_file(subject: str, html_body: str) -> dict:
-    """Save the HTML report to a local file."""
+def _save_report(title: str, html_body: str) -> dict:
+    """Write a self-contained HTML file and return its path."""
     filename = f"pm_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
     with open(filename, "w", encoding="utf-8") as fh:
         fh.write(
             f"""<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>{subject}</title></head>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+</head>
 <body>
 {html_body}
 </body>
@@ -104,14 +64,14 @@ def _save_to_file(subject: str, html_body: str) -> dict:
 # ─── Tool definitions ─────────────────────────────────────────────────────────
 
 TOOLS = [
-    # Server-side tools – Claude calls these and the API executes them automatically
+    # Server-side tools – the API executes these automatically
     {"type": "web_search_20260209", "name": "web_search"},
     {"type": "web_fetch_20260209", "name": "web_fetch"},
-    # Client-side tool – we execute this when Claude signals it's done
+    # Client-side tool – triggered when Claude has finished the report
     {
-        "name": "send_email_report",
+        "name": "save_report",
         "description": (
-            "Send the completed property management research report as an HTML email. "
+            "Save the completed property management research report as a local HTML file. "
             "Call this ONLY once you have finished researching at least 5 different "
             "sources and have compiled the full report. "
             "The html_body must be a complete, polished HTML document fragment."
@@ -119,23 +79,19 @@ TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "subject": {
+                "title": {
                     "type": "string",
                     "description": (
-                        "Email subject line, e.g. "
-                        "'Property Manager Market Research – March 2025'"
+                        "Report title used in the HTML <title> tag and as the page heading, "
+                        "e.g. 'Property Manager Market Research – March 2025'"
                     ),
                 },
                 "html_body": {
                     "type": "string",
                     "description": "Full HTML body of the report (complete formatting).",
                 },
-                "text_body": {
-                    "type": "string",
-                    "description": "Plain-text fallback version of the report.",
-                },
             },
-            "required": ["subject", "html_body", "text_body"],
+            "required": ["title", "html_body"],
         },
     },
 ]
@@ -176,8 +132,8 @@ past 30–90 days:
 4. Note: software complaints, legal/compliance challenges, tenant issues, maintenance \
 problems, financial management difficulties, staffing concerns.
 
-## Report structure (send as formatted HTML email)
-Once you have researched at least 5 sources, compile and send the report with:
+## Report structure
+Once you have researched at least 5 sources, compile the report with:
 
 1. **Executive Summary** – 3-sentence overview
 2. **Top 10 Discussion Topics** – ranked by frequency/engagement, each with:
@@ -201,13 +157,13 @@ Once you have researched at least 5 sources, compile and send the report with:
 - Include the date generated at the top
 - Make it look like a real business intelligence report, not a plain document
 
-When your research is thorough and the report is ready, call `send_email_report`.
+When your research is thorough and the report is ready, call `save_report`.
 """
 
 # ─── Agent loop ───────────────────────────────────────────────────────────────
 
 
-def run(dry_run: bool = False) -> None:
+def run() -> None:
     client = _make_client()
 
     print("=" * 60)
@@ -215,10 +171,8 @@ def run(dry_run: bool = False) -> None:
     print(f"  {_TODAY}")
     print("=" * 60)
     print()
-    print("Claude will now search property management forums and blogs,")
-    print("analyze recurring themes, and compile a report.")
-    if dry_run:
-        print("Mode: DRY RUN – report saved to file instead of emailed")
+    print("Claude will search property management forums and blogs,")
+    print("analyze recurring themes, and save a report to this folder.")
     print()
 
     messages = [
@@ -227,8 +181,8 @@ def run(dry_run: bool = False) -> None:
             "content": (
                 "Please research the top property management forums and blogs to find "
                 "the most discussed topics and pain points right now. "
-                "Check at least 5 different sources, then send me a comprehensive "
-                "report with product opportunity recommendations."
+                "Check at least 5 different sources, then save a comprehensive "
+                "HTML report with product opportunity recommendations."
             ),
         }
     ]
@@ -260,11 +214,9 @@ def run(dry_run: bool = False) -> None:
             elif btype == "server_tool_use":
                 tool_input = getattr(block, "input", {}) or {}
                 if block.name == "web_search":
-                    q = tool_input.get("query", "")
-                    print(f"  Searching: {q}")
+                    print(f"  Searching: {tool_input.get('query', '')}")
                 elif block.name == "web_fetch":
-                    url = tool_input.get("url", "")
-                    print(f"  Fetching:  {url[:90]}")
+                    print(f"  Fetching:  {tool_input.get('url', '')[:90]}")
 
         # Append the full assistant turn (required to preserve server tool results)
         messages.append({"role": "assistant", "content": response.content})
@@ -272,7 +224,7 @@ def run(dry_run: bool = False) -> None:
         # ── Handle stop reasons ────────────────────────────────────────────────
 
         if response.stop_reason == "end_turn":
-            print("\nAgent finished naturally.")
+            print("\nAgent finished.")
             break
 
         elif response.stop_reason == "pause_turn":
@@ -281,13 +233,12 @@ def run(dry_run: bool = False) -> None:
             continue  # re-send without adding a new user message
 
         elif response.stop_reason == "tool_use":
-            # Claude wants to call our client-side send_email_report tool
             tool_results = []
             for block in response.content:
                 if getattr(block, "type", None) != "tool_use":
                     continue
-                if block.name != "send_email_report":
-                    # Unexpected client-side tool; return a graceful error
+
+                if block.name != "save_report":
                     tool_results.append(
                         {
                             "type": "tool_result",
@@ -300,24 +251,9 @@ def run(dry_run: bool = False) -> None:
                     )
                     continue
 
-                print("\n  Sending report...", flush=True)
-                inp = block.input
-
-                if dry_run:
-                    result = _save_to_file(inp["subject"], inp["html_body"])
-                    print(f"  Report saved to: {result.get('saved_to')}")
-                else:
-                    result = _send_email(
-                        inp["subject"], inp["html_body"], inp["text_body"]
-                    )
-                    if result.get("success"):
-                        print(f"  Report emailed to: {result.get('sent_to')}")
-                    else:
-                        err = result.get("error", "unknown error")
-                        print(f"  Email failed ({err}); saving to file instead...")
-                        fallback = _save_to_file(inp["subject"], inp["html_body"])
-                        result = {**result, **fallback}
-                        print(f"  Saved to: {fallback.get('saved_to')}")
+                print("\n  Saving report...", flush=True)
+                result = _save_report(block.input["title"], block.input["html_body"])
+                print(f"  Report saved to: {result['saved_to']}")
 
                 tool_results.append(
                     {
@@ -330,7 +266,7 @@ def run(dry_run: bool = False) -> None:
             if tool_results:
                 messages.append({"role": "user", "content": tool_results})
             else:
-                break  # no tool calls to handle
+                break
 
         else:
             print(f"Unexpected stop reason: {response.stop_reason!r} – stopping.")
@@ -342,24 +278,5 @@ def run(dry_run: bool = False) -> None:
     print("\nDone.")
 
 
-# ─── Entry point ──────────────────────────────────────────────────────────────
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Research top property management blogs/forums and email a "
-            "report with discussion themes and product opportunity recommendations."
-        )
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Save the HTML report to a local file instead of sending it by email.",
-    )
-    args = parser.parse_args()
-    run(dry_run=args.dry_run)
-
-
 if __name__ == "__main__":
-    main()
+    run()
