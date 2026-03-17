@@ -12,7 +12,10 @@ Usage:
 
 import json
 import os
+import re
+import urllib.request
 from datetime import datetime
+from html.parser import HTMLParser
 
 import anthropic
 from dotenv import load_dotenv
@@ -59,6 +62,148 @@ def _save_report(title: str, html_body: str) -> dict:
 </html>"""
         )
     return {"success": True, "saved_to": filename}
+
+
+# ─── Slack notification ───────────────────────────────────────────────────────
+
+
+class _StripHTML(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._parts = []
+        self._skip = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("style", "script"):
+            self._skip = True
+        if tag in ("li", "p", "h1", "h2", "h3", "h4", "br", "div", "tr"):
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in ("style", "script"):
+            self._skip = False
+
+    def handle_data(self, data):
+        if not self._skip:
+            self._parts.append(data)
+
+    def get_text(self):
+        text = "".join(self._parts)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _extract_summary(html_body: str) -> dict:
+    """Pull executive summary, top-10 topics, and key stats from the HTML."""
+    parser = _StripHTML()
+    parser.feed(html_body)
+    text = parser.get_text()
+
+    # Key stats line (lines with % signs near the header)
+    stat_lines = [
+        ln.strip()
+        for ln in text.splitlines()
+        if "%" in ln and len(ln.strip()) < 100 and ln.strip()
+    ][:6]
+
+    # Executive summary: text between "Executive Summary" and "Section" or "Top 10"
+    exec_match = re.search(
+        r"Executive Summary\s*\n+(.*?)(?=\nSection|\nTop 10|\n\d+\n)",
+        text,
+        re.DOTALL,
+    )
+    exec_summary = ""
+    if exec_match:
+        exec_summary = " ".join(exec_match.group(1).split())[:600]
+
+    # Top 10 topics: lines that look like "1\nTitle" or numbered entries
+    topic_titles = re.findall(
+        r"(?:^|\n)(\d{1,2})\n([^\n]{10,80})\n", text
+    )
+    topics = [f"{n}. {t.strip()}" for n, t in topic_titles if int(n) <= 10][:10]
+
+    return {
+        "exec_summary": exec_summary,
+        "stats": stat_lines,
+        "topics": topics,
+    }
+
+
+def _send_slack_report(html_body: str, report_path: str) -> None:
+    """Post a formatted summary to Slack via incoming webhook."""
+    webhook_url = os.environ.get("SLACK_WEBHOOK_URL")
+    if not webhook_url:
+        print("  (SLACK_WEBHOOK_URL not set — skipping Slack notification)")
+        return
+
+    data = _extract_summary(html_body)
+    date_str = datetime.now().strftime("%B %d, %Y")
+
+    stats_text = "  ".join(data["stats"]) if data["stats"] else ""
+    topics_text = "\n".join(data["topics"]) if data["topics"] else ""
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {
+                "type": "plain_text",
+                "text": f"Property Manager Research Report — {date_str}",
+            },
+        },
+        {"type": "divider"},
+    ]
+
+    if data["exec_summary"]:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Summary*\n{data['exec_summary']}"},
+            }
+        )
+
+    if stats_text:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Key Stats*\n{stats_text}"},
+            }
+        )
+
+    if topics_text:
+        blocks.append(
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Top 10 Topics*\n{topics_text}"},
+            }
+        )
+
+    blocks.append({"type": "divider"})
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"Report saved to `{report_path}` · 15+ sources analyzed",
+                }
+            ],
+        }
+    )
+
+    payload = json.dumps({"blocks": blocks}).encode()
+    req = urllib.request.Request(
+        webhook_url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+        if status == 200:
+            print("  Slack notification sent.")
+        else:
+            print(f"  Slack returned HTTP {status}")
+    except Exception as exc:
+        print(f"  Slack notification failed: {exc}")
 
 
 # ─── Tool definitions ─────────────────────────────────────────────────────────
@@ -251,6 +396,7 @@ def run() -> None:
                 print("\n  Saving report...", flush=True)
                 result = _save_report(block.input["title"], block.input["html_body"])
                 print(f"  Report saved to: {result['saved_to']}")
+                _send_slack_report(block.input["html_body"], result["saved_to"])
 
                 tool_results.append(
                     {
